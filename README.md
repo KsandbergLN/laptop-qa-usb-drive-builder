@@ -48,6 +48,8 @@ Double-click the newest **Laptop QA USB Drive Builder vX.Y.Z.exe** in the `dist`
 
 The version appears in the app footer and executable metadata. Historical versioned executables can coexist in the shared `dist` folder.
 
+For operating instructions, see the [Quick User Guide](docs/QUICK_USER_GUIDE.md). For support ownership, troubleshooting, and escalation details, see the [Technician Handoff](docs/TECHNICIAN_HANDOFF.md).
+
 ## Build and publish
 
 The project targets .NET 8 for Windows:
