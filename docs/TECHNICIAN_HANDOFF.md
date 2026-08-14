@@ -22,7 +22,7 @@ The built drive uses GPT and, by default, has this layout:
 |---|---:|---|---|
 | `DELL DIAG` | 50 MB | FAT32 | Diagnostic tools |
 | `Win11 Boot` | 20 GB | NTFS | Windows setup/support files and optional `Autounattend.xml` |
-| `IT SUPP` | Remaining space | exFAT | Support tools and other technician content |
+| `IT SUPP` | `*` (remaining space) | exFAT | Support tools and other technician content |
 
 The default layout can be changed in Settings. A valid layout must contain 1–6 partitions and exactly one `*` remaining-space partition.
 
@@ -41,7 +41,7 @@ The default layout can be changed in Settings. A valid layout must contain 1–6
 3. Select one or more USB drive cards. Multiple selections are queued and processed one at a time.
 4. Review **Partition Settings** and the **Partition Layout** preview.
 5. For each partition that needs content, use **Files** and/or **Folders**. Folder contents are merged into the root of that partition in selection order.
-6. For an NTFS partition, use **XML** if an answer file is needed. The selected file is copied to the `Win11 Boot` partition root as `Autounattend.xml`.
+6. For an NTFS partition, use **XML** if an answer file is needed. The selected file is copied to that partition's root as `Autounattend.xml`.
 7. Check the warning panel. Type `ERASE` exactly in the confirmation box.
 8. Select **Build USB Queue** and approve the final confirmation.
 9. Wait for the queue to finish. Do not remove a drive or close the application while a build is active.
