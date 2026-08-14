@@ -16,20 +16,32 @@ namespace LaptopQaUsbBuilder;
 public partial class MainWindow : Window
 {
     private readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
-    private readonly ObservableCollection<string> _winFolders = [];
-    private readonly ObservableCollection<string> _itFolders = [];
     private bool _isBuilding;
+    private bool _updatingPartitionGrid;
+    private PartitionConfig? _draggedPartition;
+    private Point _partitionDragStart;
+    private double _partitionDragStartDistance = 12;
+    private DropIndicatorAdorner? _mainDropIndicator;
+    private int _mainDropDestinationIndex = -1;
     private string? _logPath;
     private List<PartitionConfig> _partitions = [];
-    private static readonly string VersionLabel = $"v{Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.3.8"}";
+    private List<PartitionConfig> _defaultPartitions = [];
+    private AppPreferences _preferences = new();
+    private static readonly string VersionLabel = $"v{Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.4.35"}";
+    private const string MainPartitionDragFormat = "LaptopQaUsbBuilder.MainPartition";
 
     public MainWindow()
     {
         InitializeComponent();
-        _partitions = LoadPartitionConfig();
+        _preferences = LoadPreferences();
+        Localization.ApplyCulture(_preferences.Language);
+        _defaultPartitions = LoadPartitionConfig();
+        _partitions = _defaultPartitions.Select(p => p.Clone()).ToList();
+        MainPartitionList.ItemsSource = _partitions;
         ApplyPartitionConfig();
-        WinFoldersList.ItemsSource = _winFolders;
-        ItFoldersList.ItemsSource = _itFolders;
+        ApplyLanguage();
+        ThemeService.Apply(this, _preferences.Theme);
+        Loaded += (_, _) => ThemeService.Apply(this, _preferences.Theme);
         Loaded += async (_, _) =>
         {
             AddActivity("USB Drive Builder started in administrator mode.");
@@ -59,7 +71,6 @@ public partial class MainWindow : Window
                 : $"Administrator mode  |  {VersionLabel}  |  {disks.Count} USB disk(s) detected";
             if (disks.Count == 0)
             {
-                SummaryTarget.Text = "No USB selected";
                 UpdatePartitionPreview([]);
                 AddActivity("No USB disks detected. Insert a drive and select Refresh.");
             }
@@ -80,7 +91,12 @@ public partial class MainWindow : Window
     {
         var queuedDisks = SelectedDisks();
         if (queuedDisks.Count == 0) return;
-        var requiredSize = _partitions.Take(_partitions.Count - 1).Sum(p => PartitionConfig.TryParseSize(p.SizeText, out var bytes) ? bytes : 0) + 64L * 1024 * 1024;
+        if (!ValidatePartitionLayout(out var layoutError))
+        {
+            MessageBox.Show(layoutError, "Invalid partition settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        var requiredSize = _partitions.Where(p => !p.IsRemaining).Sum(p => PartitionConfig.TryParseSize(p.SizeText, out var bytes) ? bytes : 0) + 64L * 1024 * 1024;
         var tooSmall = queuedDisks.Where(d => d.Size < requiredSize).ToList();
         if (tooSmall.Count > 0)
         {
@@ -88,32 +104,19 @@ public partial class MainWindow : Window
                 "Drive too small", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        var fixedSize = _partitions.Take(_partitions.Count - 1).Sum(p => PartitionConfig.TryParseSize(p.SizeText, out var bytes) ? bytes : 0);
-        var fat32TooLarge = queuedDisks.Where(d => _partitions[^1].FileSystem == "FAT32" && d.Size - fixedSize > 32L * 1024 * 1024 * 1024).ToList();
+        var fixedSize = _partitions.Where(p => !p.IsRemaining).Sum(p => PartitionConfig.TryParseSize(p.SizeText, out var bytes) ? bytes : 0);
+        var remainingPartition = _partitions.Single(p => p.IsRemaining);
+        var fat32TooLarge = queuedDisks.Where(d => remainingPartition.FileSystem == "FAT32" && d.Size - fixedSize > 32L * 1024 * 1024 * 1024).ToList();
         if (fat32TooLarge.Count > 0)
         {
-            MessageBox.Show("The remaining partition would exceed Windows' 32 GB FAT32 formatting limit. Choose NTFS or exFAT for the final partition, or increase the fixed partitions.",
+            MessageBox.Show("The remaining-space partition would exceed Windows' 32 GB FAT32 formatting limit. Choose NTFS or exFAT for that partition, or increase the fixed partitions.",
                 "FAT32 partition too large", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        if (_partitions.Count < 2 && (_winFolders.Count > 0 || !string.IsNullOrWhiteSpace(UnattendSource.Text)))
-        {
-            MessageBox.Show("Win11 content requires partition 2. Add a second partition or remove the Win11 sources.", "Partition 2 not configured", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-        if (_partitions.Count < 3 && _itFolders.Count > 0)
-        {
-            MessageBox.Show("IT Support content requires partition 3. Add a third partition or remove the IT Support sources.", "Partition 3 not configured", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var folderSources = _winFolders.Concat(_itFolders).ToArray();
-        if (!string.IsNullOrWhiteSpace(UnattendSource.Text) && !File.Exists(UnattendSource.Text.Trim()))
-        {
-            MessageBox.Show("The selected Autounattend.xml path must be an existing file.", "Invalid answer file", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
+        var folderSources = _partitions.SelectMany(p => p.SourceFolders).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var fileSources = _partitions.SelectMany(p => p.SourceFiles.Concat(string.IsNullOrWhiteSpace(p.AutounattendSource) ? [] : [p.AutounattendSource]))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         foreach (var source in folderSources)
         {
             if (!Directory.Exists(source))
@@ -131,12 +134,17 @@ public partial class MainWindow : Window
                 }
             }
         }
-        if (!string.IsNullOrWhiteSpace(UnattendSource.Text))
+        foreach (var source in fileSources)
         {
+            if (!File.Exists(source))
+            {
+                MessageBox.Show($"Source file not found:\n{source}", "Missing source", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
             foreach (var disk in queuedDisks)
-                if (await SourceIsOnDiskAsync(UnattendSource.Text.Trim(), disk.Number))
+                if (await SourceIsOnDiskAsync(source, disk.Number))
                 {
-                    MessageBox.Show($"The Autounattend.xml file is stored on queued Disk {disk.Number} and would be erased before it could be copied:\n{UnattendSource.Text.Trim()}",
+                    MessageBox.Show($"A copy source is stored on queued Disk {disk.Number} and would be erased before it could be copied:\n{source}",
                         "Source is on target disk", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
@@ -170,13 +178,18 @@ public partial class MainWindow : Window
                 BuildProgress.IsIndeterminate = false;
                 BuildProgress.Value = 35;
                 foreach (var partition in _partitions) AddActivity($"Created {partition.Name} ({partition.SizeText}, {partition.FileSystem}).");
-                if (_partitions.Count >= 2)
+                var copyPartitions = _partitions.Select((partition, index) => (partition, index))
+                    .Where(item => item.partition.SourceFolders.Count + item.partition.SourceFiles.Count > 0).ToList();
+                for (var copyIndex = 0; copyIndex < copyPartitions.Count; copyIndex++)
                 {
-                    await CopyFoldersAsync(_winFolders, $"{result.WinLetter}:\\", _partitions[1].Name, 35, 65);
-                    await CopyUnattendAsync(UnattendSource.Text.Trim(), $"{result.WinLetter}:\\");
+                    var (partition, partitionIndex) = copyPartitions[copyIndex];
+                    if (partitionIndex >= result.Letters.Count || string.IsNullOrWhiteSpace(result.Letters[partitionIndex]))
+                        throw new InvalidOperationException($"Windows did not assign a drive letter to {partition.Name}.");
+                    var start = 35 + 60 * copyIndex / Math.Max(1, copyPartitions.Count);
+                    var end = 35 + 60 * (copyIndex + 1) / Math.Max(1, copyPartitions.Count);
+                    await CopyPartitionSourcesAsync(partition, $"{result.Letters[partitionIndex]}:\\", start, end);
                 }
-                if (_partitions.Count >= 3)
-                    await CopyFoldersAsync(_itFolders, $"{result.SupportLetter}:\\", _partitions[2].Name, 65, 95);
+                if (copyPartitions.Count == 0) BuildProgress.Value = 95;
                 AddActivity("Verifying partition labels and file systems.");
                 await VerifyPartitionsAsync(disk.Number, disk.UniqueId);
                 BuildProgress.Value = 100;
@@ -219,17 +232,31 @@ public partial class MainWindow : Window
         {
             var item = _partitions[index];
             var variable = $"p{index + 1}";
-            var sizeArgument = item.IsRemaining
-                ? "-UseMaximumSize"
-                : PartitionConfig.TryParseSize(item.SizeText, out var sizeBytes) ? $"-Size {sizeBytes}" : throw new InvalidOperationException($"Invalid size for partition {index + 1}.");
+            string sizeArgument;
+            if (item.IsRemaining && index == _partitions.Count - 1)
+            {
+                sizeArgument = "-UseMaximumSize";
+            }
+            else if (item.IsRemaining)
+            {
+                var reservedAfter = _partitions.Skip(index + 1).Sum(p => PartitionConfig.TryParseSize(p.SizeText, out var bytes) ? bytes : 0);
+                script.AppendLine($"$remainingSize=[math]::Floor(((Get-Disk -Number {disk.Number}).LargestFreeExtent-{reservedAfter})/1MB)*1MB");
+                script.AppendLine("if($remainingSize -lt 32MB){throw 'The remaining-space partition would be smaller than 32 MB.'}");
+                sizeArgument = "-Size $remainingSize";
+            }
+            else
+            {
+                sizeArgument = PartitionConfig.TryParseSize(item.SizeText, out var sizeBytes)
+                    ? $"-Size {sizeBytes}"
+                    : throw new InvalidOperationException($"Invalid size for partition {index + 1}.");
+            }
             script.AppendLine($"${variable}=New-Partition -DiskNumber {disk.Number} {sizeArgument} -AssignDriveLetter");
             var allocation = item.FileSystem == "NTFS" ? " -AllocationUnitSize 4096" : "";
             script.AppendLine($"${variable} | Format-Volume -FileSystem {item.FileSystem} -NewFileSystemLabel '{PsQuote(item.Name)}'{allocation} -Confirm:$false -Force | Out-Null");
         }
 
-        var winExpression = _partitions.Count >= 2 ? "[string](($p2|Get-Volume).DriveLetter)" : "''";
-        var supportExpression = _partitions.Count >= 3 ? "[string](($p3|Get-Volume).DriveLetter)" : "''";
-        script.AppendLine($"[pscustomobject]@{{WinLetter={winExpression};SupportLetter={supportExpression}}} | ConvertTo-Json -Compress");
+        var letterExpressions = string.Join(",", Enumerable.Range(1, _partitions.Count).Select(number => $"[string](($p{number}|Get-Volume).DriveLetter)"));
+        script.AppendLine($"[pscustomobject]@{{Letters=@({letterExpressions})}} | ConvertTo-Json -Compress");
         var json = await RunPowerShellAsync(script.ToString());
         return JsonSerializer.Deserialize<PartitionResult>(json, _jsonOptions)
                ?? throw new InvalidOperationException("Windows did not return the new partition drive letters.");
@@ -267,6 +294,37 @@ public partial class MainWindow : Window
             var folderEnd = startProgress + progressRange * (index + 1) / folders.Count;
             await CopySourceAsync(folders[index], destination, $"{name} folder {index + 1} of {folders.Count}", folderStart, folderEnd);
         }
+    }
+
+    private async Task CopyPartitionSourcesAsync(PartitionConfig partition, string destination, int startProgress, int endProgress)
+    {
+        var sources = partition.SourceFolders.Select(path => (Path: path, IsFolder: true, TargetName: (string?)null))
+            .Concat(partition.SourceFiles.Select(path => (Path: path, IsFolder: false, TargetName: (string?)Path.GetFileName(path))))
+            .Concat(partition.FileSystem == "NTFS" && !string.IsNullOrWhiteSpace(partition.AutounattendSource)
+                ? [(Path: partition.AutounattendSource!, IsFolder: false, TargetName: (string?)"Autounattend.xml")]
+                : []).ToList();
+        if (sources.Count == 0) { BuildProgress.Value = endProgress; return; }
+
+        for (var index = 0; index < sources.Count; index++)
+        {
+            var sourceStart = startProgress + (endProgress - startProgress) * index / sources.Count;
+            var sourceEnd = startProgress + (endProgress - startProgress) * (index + 1) / sources.Count;
+            var source = sources[index];
+            if (source.IsFolder)
+            {
+                await CopySourceAsync(source.Path, destination, $"{partition.Name} folder {index + 1} of {sources.Count}", sourceStart, sourceEnd);
+            }
+            else
+            {
+                BuildProgress.Value = sourceStart;
+                var target = Path.Combine(destination, source.TargetName ?? Path.GetFileName(source.Path));
+                AddActivity($"Copying file {source.TargetName ?? Path.GetFileName(source.Path)} to {partition.Name}.");
+                Log($"Copying {source.Path} to {target}");
+                await Task.Run(() => File.Copy(source.Path, target, true));
+                BuildProgress.Value = sourceEnd;
+            }
+        }
+        AddActivity($"Selected content copied to {partition.Name}.");
     }
 
     private async Task CopySourceAsync(string source, string destination, string name, int startProgress, int endProgress)
@@ -400,22 +458,16 @@ public partial class MainWindow : Window
     {
         _isBuilding = building;
         ConfigButton.IsEnabled = !building;
-        DiskPicker.IsEnabled = !building; RefreshButton.IsEnabled = !building; SelectAllButton.IsEnabled = !building;
-        WinFoldersList.IsEnabled = !building; ItFoldersList.IsEnabled = !building;
-        UnattendSource.IsEnabled = !building;
-        WinAddFolderButton.IsEnabled = !building; WinRemoveFolderButton.IsEnabled = !building;
-        UnattendFileButton.IsEnabled = !building;
-        ItAddFolderButton.IsEnabled = !building; ItRemoveFolderButton.IsEnabled = !building;
+        DiskPicker.IsEnabled = !building; RefreshButton.IsEnabled = !building;
+        MainPartitionList.IsEnabled = !building; AddPartitionButton.IsEnabled = !building; MainDefaultsButton.IsEnabled = !building;
         ConfirmText.IsEnabled = !building;
         UpdateBuildButton();
     }
 
     private void UpdateBuildButton()
     {
-        if (!IsInitialized || BuildButton is null || SummarySources is null) return;
+        if (!IsInitialized || BuildButton is null) return;
         BuildButton.IsEnabled = !_isBuilding && DiskPicker.SelectedItems.Count > 0 && ConfirmText.Text == "ERASE";
-        var folderCount = _winFolders.Count + _itFolders.Count;
-        SummarySources.Text = $"{folderCount} folder(s), XML {(string.IsNullOrWhiteSpace(UnattendSource.Text) ? "not set" : "selected")}";
     }
 
     private void AddActivity(string message)
@@ -438,20 +490,54 @@ public partial class MainWindow : Window
         HeaderStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color));
     }
 
-    private static string SettingsPath => Path.Combine(
+    private void ApplyLanguage()
+    {
+        string T(string key) => Localization.Text(_preferences.Language, key);
+        SubtitleText.Text = T("Subtitle"); SelectDriveTitle.Text = $"1. {T("Select USB Drive")}";
+        RefreshButton.Content = T("Refresh");
+        PartitionEditorTitle.Text = T("Partition Settings"); MainDefaultsButton.Content = "Defaults"; PartitionLayoutTitle.Text = T("Partition Layout"); PartitionLayoutNote.Text = T("GPT Note");
+        WarningText.Text = T("Warning"); ActivityTitle.Text = T("Activity"); ConfirmLabel.Text = T("Confirm ERASE"); BuildButton.Content = T("Build USB Queue");
+        if (!_isBuilding) HeaderStatus.Text = T("Ready");
+    }
+
+    private static string DefaultSettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "LaptopQAUsbBuilder", "partition-settings.json");
+        "LaptopQAUsbBuilder", "default-partition-settings.json");
+    private static string PreferencesPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "LaptopQAUsbBuilder", "preferences.json");
+
+    private AppPreferences LoadPreferences()
+    {
+        try
+        {
+            if (!File.Exists(PreferencesPath)) return new AppPreferences();
+            var result = JsonSerializer.Deserialize<AppPreferences>(File.ReadAllText(PreferencesPath), _jsonOptions) ?? new AppPreferences();
+            result.Language = Localization.Resolve(result.Language).Code; result.Theme = ThemeService.Normalize(result.Theme);
+            return result;
+        }
+        catch { return new AppPreferences(); }
+    }
+
+    private void SavePreferences()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(PreferencesPath)!);
+        File.WriteAllText(PreferencesPath, JsonSerializer.Serialize(_preferences, new JsonSerializerOptions { WriteIndented = true }));
+    }
 
     private List<PartitionConfig> LoadPartitionConfig()
     {
         try
         {
-            if (!File.Exists(SettingsPath)) return PartitionConfig.CreateDefaults();
-            var loaded = JsonSerializer.Deserialize<List<PartitionConfig>>(File.ReadAllText(SettingsPath), _jsonOptions);
-            if (loaded is null || loaded.Count is < 1 or > 6 || !loaded[^1].IsRemaining) return PartitionConfig.CreateDefaults();
+            if (!File.Exists(DefaultSettingsPath)) return PartitionConfig.CreateDefaults();
+            var loaded = JsonSerializer.Deserialize<List<PartitionConfig>>(File.ReadAllText(DefaultSettingsPath), _jsonOptions);
+            if (loaded is not null)
+                foreach (var partition in loaded)
+                    if (partition.SizeText.Trim().Equals("Remaining", StringComparison.OrdinalIgnoreCase)) partition.SizeText = "*";
+            if (loaded is null || loaded.Count is < 1 or > 6 || loaded.Count(p => p.IsRemaining) != 1) return PartitionConfig.CreateDefaults();
             if (loaded.Any(p => !PartitionConfig.AllowedFormats.Contains(p.FileSystem))) return PartitionConfig.CreateDefaults();
-            for (var i = 0; i < loaded.Count - 1; i++)
-                if (loaded[i].IsRemaining || !PartitionConfig.TryParseSize(loaded[i].SizeText, out var bytes) || bytes < 32L * 1024 * 1024)
+            for (var i = 0; i < loaded.Count; i++)
+                if (!loaded[i].IsRemaining && (!PartitionConfig.TryParseSize(loaded[i].SizeText, out var bytes) || bytes < 32L * 1024 * 1024))
                     return PartitionConfig.CreateDefaults();
             for (var i = 0; i < loaded.Count; i++) loaded[i].Number = i + 1;
             return loaded;
@@ -462,19 +548,224 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SavePartitionConfig()
+    private void SaveDefaultPartitionConfig()
     {
-        var folder = Path.GetDirectoryName(SettingsPath)!;
+        var folder = Path.GetDirectoryName(DefaultSettingsPath)!;
         Directory.CreateDirectory(folder);
-        File.WriteAllText(SettingsPath, JsonSerializer.Serialize(_partitions, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(DefaultSettingsPath, JsonSerializer.Serialize(_defaultPartitions, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private bool ValidatePartitionLayout(out string message)
+    {
+        message = "";
+        if (_partitions.Count is < 1 or > 6) { message = "Choose between 1 and 6 partitions."; return false; }
+        if (_partitions.Count(p => p.IsRemaining) != 1) { message = "Exactly one partition must use * for remaining space."; return false; }
+        if (_partitions.Select(p => p.Name.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != _partitions.Count)
+        { message = "Every volume label must be unique."; return false; }
+        foreach (var item in _partitions)
+        {
+            item.Name = item.Name.Trim();
+            if (string.IsNullOrWhiteSpace(item.Name)) { message = $"Partition {item.Number} needs a volume label."; return false; }
+            if (item.Name.IndexOfAny(['\\', '/', '?', '*', ':', '|', '"', '<', '>']) >= 0 || item.Name.Any(char.IsControl))
+            { message = $"Partition {item.Number} contains a character that is not valid in a volume label."; return false; }
+            if (!PartitionConfig.AllowedFormats.Contains(item.FileSystem)) { message = $"Partition {item.Number} has an unsupported format."; return false; }
+            var maxLength = item.FileSystem == "FAT32" ? 11 : item.FileSystem == "exFAT" ? 15 : 32;
+            if (item.Name.Length > maxLength) { message = $"{item.FileSystem} label '{item.Name}' exceeds {maxLength} characters."; return false; }
+            if (item.IsRemaining) continue;
+            if (!PartitionConfig.TryParseSize(item.SizeText, out var bytes)) { message = $"Partition {item.Number} needs a size such as 50 MB or 20 GB, or * for remaining space."; return false; }
+            if (bytes < 32L * 1024 * 1024) { message = $"Partition {item.Number} must be at least 32 MB."; return false; }
+            if (item.FileSystem == "FAT32" && bytes > 32L * 1024 * 1024 * 1024) { message = $"Partition {item.Number} exceeds Windows' 32 GB FAT32 formatting limit."; return false; }
+        }
+        return true;
+    }
+
+    private void PartitionConfigurationChanged(bool refreshList = true)
+    {
+        for (var index = 0; index < _partitions.Count; index++) _partitions[index].Number = index + 1;
+        if (refreshList) MainPartitionList.Items.Refresh();
+        UpdatePartitionPreview(SelectedDisks());
+        UpdateBuildButton();
+        ConfirmText.Clear();
+    }
+
+    private void QueuePartitionConfigurationChanged()
+    {
+        if (_updatingPartitionGrid || _isBuilding) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_updatingPartitionGrid) return;
+            _updatingPartitionGrid = true;
+            try { PartitionConfigurationChanged(false); }
+            finally { _updatingPartitionGrid = false; }
+        }));
+    }
+
+    private void PartitionField_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (IsLoaded) QueuePartitionConfigurationChanged();
+    }
+
+    private void PartitionFormat_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is PartitionConfig partition && partition.FileSystem != "NTFS")
+            partition.AutounattendSource = null;
+        if (IsLoaded) QueuePartitionConfigurationChanged();
+    }
+
+    private void PartitionDragHandle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_isBuilding || (sender as FrameworkElement)?.DataContext is not PartitionConfig partition) return;
+        _draggedPartition = partition;
+        _mainDropDestinationIndex = _partitions.IndexOf(partition);
+        _partitionDragStart = e.GetPosition(this);
+        var row = FindVisualAncestor<ListBoxItem>(sender as DependencyObject);
+        _partitionDragStartDistance = Math.Max(12, row is null
+            ? 12
+            : ((FrameworkElement?)FindVisualDescendant<Border>(row, "PartitionRowCard") ?? row).ActualHeight);
+        e.Handled = true;
+    }
+
+    private void MainPartitionList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        _draggedPartition = null;
+        _mainDropDestinationIndex = -1;
+        ClearMainDropIndicator();
+    }
+
+    private void MainPartitionList_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_draggedPartition is null) return;
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            _draggedPartition = null;
+            return;
+        }
+        var position = e.GetPosition(this);
+        var deltaX = position.X - _partitionDragStart.X;
+        var deltaY = position.Y - _partitionDragStart.Y;
+        if (Math.Sqrt(deltaX * deltaX + deltaY * deltaY) < _partitionDragStartDistance) return;
+        var data = new DataObject(MainPartitionDragFormat, _draggedPartition);
+        DragDrop.DoDragDrop(MainPartitionList, data, DragDropEffects.Move);
+        ClearMainDropIndicator();
+        _draggedPartition = null;
+        _mainDropDestinationIndex = -1;
+        e.Handled = true;
+    }
+
+    private void MainPartitionList_DragOver(object sender, DragEventArgs e)
+    {
+        ListBoxItem? row = null;
+        var showAfter = false;
+        var dragged = e.Data.GetData(MainPartitionDragFormat) as PartitionConfig;
+        var valid = !_isBuilding && dragged is not null;
+        if (valid) valid = TryGetMainDropTarget(e, dragged!, out row, out showAfter, out _);
+        e.Effects = valid ? DragDropEffects.Move : DragDropEffects.None;
+        if (valid) ShowMainDropIndicator(row!, showAfter); else ClearMainDropIndicator();
+        e.Handled = true;
+    }
+
+    private void MainPartitionList_DragLeave(object sender, DragEventArgs e)
+    {
+        var point = e.GetPosition(MainPartitionList);
+        if (point.X < 0 || point.Y < 0 || point.X > MainPartitionList.ActualWidth || point.Y > MainPartitionList.ActualHeight)
+            ClearMainDropIndicator();
+    }
+
+    private void MainPartitionList_Drop(object sender, DragEventArgs e)
+    {
+        ClearMainDropIndicator();
+        if (_isBuilding || e.Data.GetData(MainPartitionDragFormat) is not PartitionConfig dragged) return;
+        var oldIndex = _partitions.IndexOf(dragged);
+        if (oldIndex < 0 || !TryGetMainDropTarget(e, dragged, out _, out _, out var destinationIndex)) return;
+        if (destinationIndex == oldIndex)
+        {
+            MainPartitionList.SelectedItem = dragged;
+            _draggedPartition = null;
+            e.Handled = true;
+            return;
+        }
+        _partitions.RemoveAt(oldIndex);
+        _partitions.Insert(Math.Clamp(destinationIndex, 0, _partitions.Count), dragged);
+        PartitionConfigurationChanged();
+        MainPartitionList.SelectedItem = dragged;
+        _draggedPartition = null;
+        e.Handled = true;
+    }
+
+    private bool TryGetMainDropTarget(DragEventArgs e, PartitionConfig dragged, out ListBoxItem? row, out bool showAfter, out int destinationIndex)
+    {
+        destinationIndex = GetMainDestinationIndex(e.GetPosition(MainPartitionList).Y);
+        showAfter = false;
+        row = MainPartitionList.ItemContainerGenerator.ContainerFromIndex(destinationIndex) as ListBoxItem;
+        return row is not null;
+    }
+
+    private int GetMainDestinationIndex(double pointerY)
+    {
+        var destination = Math.Max(0, MainPartitionList.Items.Count - 1);
+        ListBoxItem? destinationRow = null;
+        for (var index = 0; index < MainPartitionList.Items.Count; index++)
+        {
+            if (MainPartitionList.ItemContainerGenerator.ContainerFromIndex(index) is not ListBoxItem row) continue;
+            var top = row.TranslatePoint(new Point(0, 0), MainPartitionList).Y;
+            if (pointerY >= top + row.ActualHeight) continue;
+            destination = index;
+            destinationRow = row;
+            break;
+        }
+        if (_mainDropDestinationIndex >= 0 && destination != _mainDropDestinationIndex && destinationRow is not null)
+        {
+            var top = destinationRow.TranslatePoint(new Point(0, 0), MainPartitionList).Y;
+            var depth = pointerY - top;
+            if (depth < destinationRow.ActualHeight * 0.25 || depth > destinationRow.ActualHeight * 0.75)
+                return _mainDropDestinationIndex;
+        }
+        _mainDropDestinationIndex = destination;
+        return destination;
+    }
+
+    private void ShowMainDropIndicator(ListBoxItem row, bool showAfter)
+    {
+        UIElement targetBox = (UIElement?)FindVisualDescendant<Border>(row, "PartitionRowCard") ?? row;
+        if (_mainDropIndicator?.AdornedElement == targetBox && _mainDropIndicator.IsAfter == showAfter) return;
+        _mainDropIndicator?.Detach();
+        _mainDropIndicator = DropIndicatorAdorner.Attach(targetBox, showAfter);
+    }
+
+    private void ClearMainDropIndicator()
+    {
+        _mainDropIndicator?.Detach();
+        _mainDropIndicator = null;
+    }
+
+    private static T? FindVisualAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T match) return match;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
+    }
+
+    private static T? FindVisualDescendant<T>(DependencyObject parent, string name) where T : FrameworkElement
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match && match.Name == name) return match;
+            var nested = FindVisualDescendant<T>(child, name);
+            if (nested is not null) return nested;
+        }
+        return null;
     }
 
     private void ApplyPartitionConfig()
     {
         var selected = SelectedDisks();
+        MainPartitionList.ItemsSource = _partitions;
+        MainPartitionList.Items.Refresh();
         UpdatePartitionPreview(selected);
-        WinContentTitle.Text = _partitions.Count >= 2 ? $"3. {_partitions[1].Name}" : "3. Partition 2 not configured";
-        ItContentTitle.Text = _partitions.Count >= 3 ? $"4. {_partitions[2].Name}" : "4. Partition 3 not configured";
         UpdateBuildButton();
     }
 
@@ -489,21 +780,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        var fixedSize = _partitions.Take(Math.Max(0, _partitions.Count - 1))
+        var fixedSize = _partitions.Where(p => !p.IsRemaining)
             .Sum(p => PartitionConfig.TryParseSize(p.SizeText, out var bytes) ? bytes : 0);
-        var colors = new[] { "#D8F1E5", "#DCEAF4", "#F4E8CF", "#E8DFF2", "#F2DDDC", "#D8ECEB" };
-        var borderColors = new[] { "#55C98D", "#6AAED6", "#D5A84E", "#A987C5", "#D3827F", "#62B4AF" };
-        var compact = disks.Count > 1;
-        var rowHeight = 62d / disks.Count;
+        var rowHeight = Math.Max(1, PartitionPreview.ActualHeight) / disks.Count;
+        var showDiskLabel = disks.Count > 1;
+        var compact = rowHeight < 48;
 
-        PartitionPreview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(compact ? 54 : 0) });
+        PartitionPreview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(showDiskLabel ? 54 : 0) });
         PartitionPreview.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         for (var diskIndex = 0; diskIndex < disks.Count; diskIndex++)
         {
             var disk = disks[diskIndex];
             PartitionPreview.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            if (compact)
+            if (showDiskLabel)
             {
                 var diskLabel = new TextBlock
                 {
@@ -520,7 +810,7 @@ public partial class MainWindow : Window
             for (var i = 0; i < _partitions.Count; i++)
             {
                 long size;
-                if (i == _partitions.Count - 1)
+                if (_partitions[i].IsRemaining)
                 {
                     size = Math.Max(1, disk.Size - fixedSize);
                     _partitions[i].CalculatedSizeText = FormatBytes(size);
@@ -540,26 +830,27 @@ public partial class MainWindow : Window
                     Width = new GridLength(partitionSizes[i] / totalSize, GridUnitType.Star),
                     MinWidth = compact ? 34 : 90
                 });
-                var detailText = i == _partitions.Count - 1 ? $"{FormatBytes(partitionSizes[i])} | {_partitions[i].FileSystem}" : _partitions[i].PreviewText;
+                var detailText = _partitions[i].IsRemaining ? $"{FormatBytes(partitionSizes[i])} | {_partitions[i].FileSystem}" : _partitions[i].PreviewText;
                 var label = new TextBlock
                 {
                     Text = compact ? _partitions[i].Name : $"{_partitions[i].Name}\n{detailText}",
                     FontWeight = FontWeights.Bold, FontSize = compact ? (rowHeight < 18 ? 8 : 10) : 12,
                     TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
                 };
+                label.SetResourceReference(TextBlock.ForegroundProperty, "PartitionText");
                 var tooltipContent = new StackPanel();
                 tooltipContent.Children.Add(new TextBlock { Text = $"Disk {disk.Number} · {_partitions[i].Name}", FontWeight = FontWeights.Bold, FontSize = 13 });
                 tooltipContent.Children.Add(new TextBlock { Text = $"Size: {FormatBytes(partitionSizes[i])}", Margin = new Thickness(0, 4, 0, 0) });
                 tooltipContent.Children.Add(new TextBlock { Text = $"Format: {_partitions[i].FileSystem}", Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#526970")) });
                 var segment = new Border
                 {
-                    Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(colors[i % colors.Length])),
-                    BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(borderColors[i % borderColors.Length])),
                     BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(compact ? 5 : 10),
                     Padding = compact ? new Thickness(5, 0, 5, 0) : new Thickness(8, 4, 8, 4),
                     Margin = new Thickness(2, 1, 2, 1), Child = label,
                     ToolTip = new ToolTip { Content = tooltipContent }
                 };
+                segment.SetResourceReference(Border.BackgroundProperty, $"PartitionBackground{i % 6}");
+                segment.SetResourceReference(Border.BorderBrushProperty, $"PartitionBorder{i % 6}");
                 ToolTipService.SetInitialShowDelay(segment, 180);
                 ToolTipService.SetShowDuration(segment, 12000);
                 Grid.SetColumn(segment, i);
@@ -592,16 +883,13 @@ public partial class MainWindow : Window
         var selected = SelectedDisks();
         if (selected.Count > 0)
         {
-            SummaryTarget.Text = $"{selected.Count} USB drive(s) queued";
             UpdatePartitionPreview(selected);
             ConfirmText.Clear();
         }
         else
         {
-            SummaryTarget.Text = "No USB selected";
             UpdatePartitionPreview([]);
         }
-        SelectAllButton.Content = DiskPicker.Items.Count > 0 && selected.Count == DiskPicker.Items.Count ? "Clear All" : "Select All";
         UpdateBuildButton();
     }
 
@@ -644,45 +932,94 @@ public partial class MainWindow : Window
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void Close_Click(object sender, RoutedEventArgs e) { if (!_isBuilding) Close(); }
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshDisksAsync();
-    private void SelectAll_Click(object sender, RoutedEventArgs e)
-    {
-        if (DiskPicker.Items.Count > 0 && DiskPicker.SelectedItems.Count == DiskPicker.Items.Count)
-        {
-            DiskPicker.UnselectAll();
-            SelectAllButton.Content = "Select All";
-        }
-        else
-        {
-            DiskPicker.SelectAll();
-            SelectAllButton.Content = "Clear All";
-        }
-    }
     private void ConfirmText_TextChanged(object sender, TextChangedEventArgs e) => UpdateBuildButton();
     private void Source_TextChanged(object sender, TextChangedEventArgs e) => UpdateBuildButton();
     private void Config_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new ConfigWindow(_partitions) { Owner = this };
-        if (dialog.ShowDialog() != true) return;
-        _partitions = dialog.Result;
-        SavePartitionConfig();
-        ApplyPartitionConfig();
-        ConfirmText.Clear();
-        AddActivity($"Partition configuration updated: {_partitions.Count} partition(s).");
-    }
-    private void WinAddFolder_Click(object sender, RoutedEventArgs e) => AddFolder(_winFolders);
-    private void WinRemoveFolder_Click(object sender, RoutedEventArgs e) => RemoveFolder(_winFolders, WinFoldersList);
-    private void UnattendFile_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFileDialog
+        var originalLanguage = _preferences.Language;
+        var dialog = new ConfigWindow(_defaultPartitions, _preferences.Language, _preferences.Theme) { Owner = this };
+        if (dialog.ShowDialog() != true)
         {
-            Title = "Select Autounattend.xml",
-            Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*",
-            CheckFileExists = true
-        };
-        if (dialog.ShowDialog() == true) UnattendSource.Text = dialog.FileName;
+            Localization.ApplyCulture(originalLanguage);
+            return;
+        }
+        _defaultPartitions = dialog.Result.Select(p => p.Clone()).ToList();
+        _preferences.Language = dialog.SelectedLanguage;
+        _preferences.Theme = dialog.SelectedTheme;
+        SaveDefaultPartitionConfig();
+        SavePreferences();
+        Localization.ApplyCulture(_preferences.Language);
+        ApplyLanguage();
+        ThemeService.Apply(this, _preferences.Theme);
+        AddActivity($"Default partition layout updated: {_defaultPartitions.Count} partition(s).");
     }
-    private void ItAddFolder_Click(object sender, RoutedEventArgs e) => AddFolder(_itFolders);
-    private void ItRemoveFolder_Click(object sender, RoutedEventArgs e) => RemoveFolder(_itFolders, ItFoldersList);
+    private void AddPartition_Click(object sender, RoutedEventArgs e)
+    {
+        if (_partitions.Count >= 6) { MessageBox.Show("A maximum of six partitions is supported.", "Partition limit", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        _partitions.Add(new PartitionConfig
+        {
+            Number = _partitions.Count + 1,
+            Name = $"PARTITION {_partitions.Count + 1}",
+            SizeText = _partitions.Any(p => p.IsRemaining) ? "10 GB" : "*",
+            FileSystem = "exFAT"
+        });
+        PartitionConfigurationChanged();
+    }
+
+    private void MainDefaults_Click(object sender, RoutedEventArgs e)
+    {
+        var hasSources = _partitions.Any(p => p.SourceFiles.Count + p.SourceFolders.Count > 0 || !string.IsNullOrWhiteSpace(p.AutounattendSource));
+        if (hasSources && MessageBox.Show("Restore the configured default partitions and clear the current content selections?", "Restore defaults", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        _partitions = _defaultPartitions.Select(p => p.Clone()).ToList();
+        MainPartitionList.ItemsSource = _partitions;
+        PartitionConfigurationChanged();
+        AddActivity("Default partition layout restored.");
+    }
+
+    private void RemovePartition_Click(object sender, RoutedEventArgs e)
+    {
+        if (_partitions.Count <= 1) { MessageBox.Show("At least one partition is required.", "Partition required", MessageBoxButton.OK, MessageBoxImage.Information); return; }
+        var item = (sender as FrameworkElement)?.DataContext as PartitionConfig ?? MainPartitionList.SelectedItem as PartitionConfig ?? _partitions[^1];
+        if ((item.SourceFiles.Count + item.SourceFolders.Count > 0 || !string.IsNullOrWhiteSpace(item.AutounattendSource)) && MessageBox.Show($"Remove {item.Name} and its selected content list?", "Remove partition", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        _partitions.Remove(item);
+        if (!_partitions.Any(p => p.IsRemaining)) _partitions[^1].SizeText = "*";
+        PartitionConfigurationChanged();
+    }
+
+    private void PartitionFiles_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not PartitionConfig partition) return;
+        var dialog = new OpenFileDialog { Title = $"Select files for {partition.Name}", Filter = "All files (*.*)|*.*", CheckFileExists = true, Multiselect = true };
+        if (dialog.ShowDialog() != true) return;
+        foreach (var path in dialog.FileNames)
+            if (!partition.SourceFiles.Any(existing => existing.Equals(path, StringComparison.OrdinalIgnoreCase))) partition.SourceFiles.Add(path);
+        MainPartitionList.Items.Refresh(); UpdateBuildButton();
+    }
+
+    private void PartitionFolders_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not PartitionConfig partition) return;
+        var dialog = new OpenFolderDialog { Title = $"Select a folder for {partition.Name}", Multiselect = false };
+        if (dialog.ShowDialog() != true) return;
+        if (!partition.SourceFolders.Any(existing => existing.Equals(dialog.FolderName, StringComparison.OrdinalIgnoreCase))) partition.SourceFolders.Add(dialog.FolderName);
+        MainPartitionList.Items.Refresh(); UpdateBuildButton();
+    }
+
+    private void PartitionAutounattend_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not PartitionConfig partition || partition.FileSystem != "NTFS") return;
+        var dialog = new OpenFileDialog { Title = $"Select Autounattend.xml for {partition.Name}", Filter = "XML files (*.xml)|*.xml|All files (*.*)|*.*", CheckFileExists = true, Multiselect = false };
+        if (dialog.ShowDialog() != true) return;
+        partition.AutounattendSource = dialog.FileName;
+        MainPartitionList.Items.Refresh(); UpdateBuildButton();
+    }
+
+    private void PartitionSourcesClear_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not PartitionConfig partition || (partition.SourceFiles.Count + partition.SourceFolders.Count == 0 && string.IsNullOrWhiteSpace(partition.AutounattendSource))) return;
+        if (MessageBox.Show($"Clear all selected files and folders for {partition.Name}?", "Clear partition content", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        partition.SourceFiles.Clear(); partition.SourceFolders.Clear(); partition.AutounattendSource = null; MainPartitionList.Items.Refresh(); UpdateBuildButton();
+    }
 }
 
 public sealed class UsbDisk
@@ -701,6 +1038,5 @@ public sealed class UsbDisk
 
 public sealed class PartitionResult
 {
-    public string WinLetter { get; set; } = "";
-    public string SupportLetter { get; set; } = "";
+    public List<string> Letters { get; set; } = [];
 }

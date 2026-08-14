@@ -1,43 +1,76 @@
 # Laptop QA USB Drive Builder
 
-A compiled native Windows WPF utility that prepares a USB drive with this fixed layout:
+A native Windows WPF utility for erasing USB drives, creating a configurable GPT partition layout, and copying standardized support content to each partition.
 
-The drive is initialized with a GPT partition table.
+## Default layout
 
-Use the configuration cog in the upper-left corner to set 1-6 partitions, volume labels, sizes, and FAT32/NTFS/exFAT formats. The last partition always consumes the remaining space. Settings are saved for future launches.
-
-After a USB drive is selected, the partition preview shows the calculated capacity of the final remaining-space partition.
-The preview uses proportional widths and distinct colors to make the relative partition sizes easy to compare; very small partitions retain a minimum readable width.
-The partition preview remains blank until at least one target drive is selected.
-
-Select one or more USB drive cards to create a sequential build queue. Each drive is revalidated immediately before it is erased, built and verified before the next drive starts, and failures are logged without preventing later queued drives from running.
-The Partition Layout section shows a separate proportional strip for every selected drive. Its total height remains fixed, so all strips dynamically become shorter together as more drives are added to the queue.
-Hover over any partition segment to see a popup with its drive number, label, calculated size, and filesystem.
-
-The compact Build Summary shows the queued target count, GPT style, and selected content sources; detailed capacity information is kept in the partition layout so the Activity panel has more room.
+The factory defaults are:
 
 | Partition | Size | File system |
 |---|---:|---|
 | `DELL DIAG` | 50 MB | FAT32 |
 | `Win11 Boot` | 20 GB | NTFS |
-| `IT SUPP` | Remaining space | exFAT |
+| `IT SUPP` | `*` (all remaining space) | exFAT |
 
-The app accepts multiple source folders for both `Win11 Boot` and `IT SUPP`. Each selected folder's contents are merged into the root of its destination partition in list order. An optional Windows Setup answer file can also be selected; it is copied to the root of `Win11 Boot` as `Autounattend.xml`.
+`*` may be used on exactly one partition in any position. Fixed sizes accept MB or GB values, such as `50 MB` and `20 GB`.
+
+## Partition configuration
+
+Open the three-bar menu in the upper-left corner to manage the default partition layout. Defaults can contain 1-6 partitions with configurable volume labels, sizes, and FAT32, NTFS, or exFAT formats.
+
+Default editing is locked initially to prevent accidental changes. Unlock it with the lock icon, make the required changes, and choose **Save**. The main-screen **Defaults** button restores the saved default layout without changing the factory fallback values.
+
+Partitions can be added with the green `+`, removed with their red `-`, and reordered using the two-bar drag handles. Config removal and reordering controls are disabled while defaults are locked.
+
+## Adding content
+
+Every partition on the main screen can receive its own files and folders. Folder contents are merged into the root of the destination partition, while selected files are copied directly to that root.
+
+NTFS partitions also show an **XML** button for selecting an answer file. The selected file is copied to the partition root as `Autounattend.xml`; the button turns bright green when a file is attached.
+
+Content selections stay with their partition when the partition is reordered. Hover over the content controls to review the selected paths, or use **Clear** to remove all content selections from that partition.
+
+## Selecting and building USB drives
+
+The drive picker shows disks that Windows reports with a USB bus type. Select one or more drive cards to create a sequential build queue. Each selected drive is revalidated immediately before it is erased, partitioned, populated, and verified. A failure on one drive is logged without preventing later queued drives from running.
+
+Before building, enter `ERASE` in the confirmation field. Every partition and file on each selected target is permanently removed.
+
+The Partition Layout card remains blank until a drive is selected. It then displays proportional, color-coded partition segments using each drive's calculated capacity. Multiple selected drives share the available height dynamically. Hover over a segment to see its drive number, label, calculated size, and file system.
+
+## Appearance and language
+
+The configuration menu includes Light, Dark, and AMOLED themes and the same 12-language set used by Laptop QA V2. Theme changes preview live, and saved theme and language preferences persist between launches.
 
 ## Run
 
-Double-click the newest **Laptop QA USB Drive Builder vX.Y.Z.exe** in the `dist` folder. Accept the Windows administrator prompt; disk partitioning requires elevation. No PowerShell window is displayed. New releases keep older versioned executables in the same folder for historical access; the version is also shown in the app footer and executable metadata.
+Double-click the newest **Laptop QA USB Drive Builder vX.Y.Z.exe** in the `dist` folder and accept the administrator prompt. Disk partitioning requires elevation. The WPF application performs storage operations without displaying a PowerShell window.
 
-For releases, update `AppVersion`, `AssemblyVersion`, and `FileVersion` in the project file and run `publish.cmd`. It publishes through a staging directory so existing historical executables in `dist` are preserved.
+The version appears in the app footer and executable metadata. Historical versioned executables can coexist in the shared `dist` folder.
 
-The disk picker only displays disks Windows reports with a USB bus type. Before erasing, the app also checks that the target is still a USB disk and is not the system or boot disk.
+## Build and publish
 
-## Important
+The project targets .NET 8 for Windows:
 
-- The selected USB disk is completely erased. This cannot be undone.
-- Use a drive larger than 20.3 GB.
-- Use **Add Folder** repeatedly to include additional folders. Select a list entry and choose **Remove** to remove it.
-- Folder selections copy and merge each folder's contents into the root of the destination partition.
-- Protected drive metadata such as `System Volume Information` and `$RECYCLE.BIN` is skipped when a drive root is selected as a source.
+```powershell
+dotnet build .\LaptopQaUsbBuilder.csproj -c Release
+```
+
+For a versioned release, update `AppVersion`, `AssemblyVersion`, and `FileVersion` in `LaptopQaUsbBuilder.csproj`, then run:
+
+```powershell
+.\publish.cmd
+```
+
+The publish script uses a staging directory and places the versioned executable in `dist` without deleting historical builds.
+
+## Safety and logs
+
+- The app initializes every selected target as GPT.
+- The selected USB disks are completely erased; this cannot be undone.
+- Targets are checked again before erasure and rejected if Windows reports them as boot, system, non-USB, or changed since selection.
+- Sources stored on a queued target disk are rejected before building.
+- Protected metadata such as `System Volume Information` and `$RECYCLE.BIN` is skipped when a drive root is used as a source.
+- FAT32 sizes and volume-label lengths are validated against Windows limits.
 - Copy, build, and crash logs are saved under `%LOCALAPPDATA%\LaptopQAUsbBuilder\Logs`.
-- This creates the requested partition layout and copies content. It does not modify source files to make a Windows image bootable.
+- The app creates partitions and copies content; it does not modify source files to make a Windows image bootable.
