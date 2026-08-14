@@ -1,3 +1,5 @@
+![Laptop QA USB Drive Builder application](docs/images/laptop-qa-usb-drive-builder.png)
+
 # Laptop QA USB Drive Builder
 
 A native Windows WPF utility for erasing USB drives, creating a configurable GPT partition layout, and copying standardized support content to each partition.
