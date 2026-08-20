@@ -2,7 +2,18 @@
 
 # Laptop QA USB Drive Builder
 
-A native Windows WPF utility for erasing USB drives, creating a configurable GPT partition layout, and copying standardized support content to each partition.
+**Laptop QA USB Drive Builder** is a Windows desktop tool for IT technicians who need to turn one or more USB drives into consistent, ready-to-use laptop support media. It replaces repetitive manual disk preparation with a guided workflow that erases approved USB disks, creates a configurable GPT partition layout, formats each volume, and copies the correct diagnostic, Windows setup, and support content to its destination.
+
+The app is designed for repeatable bench workflows. Technicians can save a standard layout, preview how it will fit each selected drive, attach different files and folders to individual partitions, and build several USB drives in a sequential queue. Before and after every build, the app validates the target disk and resulting partition layout, while activity and file logs provide a clear record for troubleshooting.
+
+## Highlights
+
+- Configure 1-6 GPT partitions using FAT32, NTFS, or exFAT, including one partition that consumes all remaining space.
+- Add files and folders per partition, with dedicated NTFS support for `Autounattend.xml` and ISO images.
+- Build multiple USB drives in sequence without one failed drive stopping the rest of the queue.
+- Preview proportional partition layouts for every selected drive before anything is erased.
+- Revalidate USB identity and reject boot, system, non-USB, changed, or unsafe source/target disks.
+- Save default layouts, switch among Light, Dark, and AMOLED themes, and use the interface in 12 languages.
 
 ## Default layout
 
