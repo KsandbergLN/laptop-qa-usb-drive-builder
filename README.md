@@ -28,7 +28,7 @@ Partitions can be added with the green `+`, removed with their red `-`, and reor
 
 Every partition on the main screen can receive its own files and folders. Folder contents are merged into the root of the destination partition, while selected files are copied directly to that root.
 
-NTFS partitions also show an **XML** button for selecting an answer file. The selected file is copied to the partition root as `Autounattend.xml`; the button turns bright green when a file is attached.
+NTFS partitions also show **XML** and **ISO** buttons. XML selects an answer file that is copied to the partition root as `Autounattend.xml`; it turns bright green when a file is attached or when an XML file is detected at the root of a selected folder. ISO selects one ISO image and copies it to the partition root under its original filename; its button turns green when selected.
 
 Content selections stay with their partition when the partition is reordered. Hover over the content controls to review the selected paths, or use **Clear** to remove all content selections from that partition.
 

@@ -27,7 +27,7 @@ public partial class MainWindow : Window
     private List<PartitionConfig> _partitions = [];
     private List<PartitionConfig> _defaultPartitions = [];
     private AppPreferences _preferences = new();
-    private static readonly string VersionLabel = $"v{Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.4.35"}";
+    private static readonly string VersionLabel = $"v{Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.4.36"}";
     private const string MainPartitionDragFormat = "LaptopQaUsbBuilder.MainPartition";
 
     public MainWindow()
@@ -115,7 +115,9 @@ public partial class MainWindow : Window
         }
 
         var folderSources = _partitions.SelectMany(p => p.SourceFolders).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var fileSources = _partitions.SelectMany(p => p.SourceFiles.Concat(string.IsNullOrWhiteSpace(p.AutounattendSource) ? [] : [p.AutounattendSource]))
+        var fileSources = _partitions.SelectMany(p => p.SourceFiles
+                .Concat(string.IsNullOrWhiteSpace(p.AutounattendSource) ? [] : [p.AutounattendSource])
+                .Concat(string.IsNullOrWhiteSpace(p.IsoSource) ? [] : [p.IsoSource]))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         foreach (var source in folderSources)
         {
@@ -179,7 +181,9 @@ public partial class MainWindow : Window
                 BuildProgress.Value = 35;
                 foreach (var partition in _partitions) AddActivity($"Created {partition.Name} ({partition.SizeText}, {partition.FileSystem}).");
                 var copyPartitions = _partitions.Select((partition, index) => (partition, index))
-                    .Where(item => item.partition.SourceFolders.Count + item.partition.SourceFiles.Count > 0).ToList();
+                    .Where(item => item.partition.SourceFolders.Count + item.partition.SourceFiles.Count > 0 ||
+                                   !string.IsNullOrWhiteSpace(item.partition.AutounattendSource) ||
+                                   !string.IsNullOrWhiteSpace(item.partition.IsoSource)).ToList();
                 for (var copyIndex = 0; copyIndex < copyPartitions.Count; copyIndex++)
                 {
                     var (partition, partitionIndex) = copyPartitions[copyIndex];
@@ -302,6 +306,9 @@ public partial class MainWindow : Window
             .Concat(partition.SourceFiles.Select(path => (Path: path, IsFolder: false, TargetName: (string?)Path.GetFileName(path))))
             .Concat(partition.FileSystem == "NTFS" && !string.IsNullOrWhiteSpace(partition.AutounattendSource)
                 ? [(Path: partition.AutounattendSource!, IsFolder: false, TargetName: (string?)"Autounattend.xml")]
+                : [])
+            .Concat(partition.FileSystem == "NTFS" && !string.IsNullOrWhiteSpace(partition.IsoSource)
+                ? [(Path: partition.IsoSource!, IsFolder: false, TargetName: (string?)Path.GetFileName(partition.IsoSource))]
                 : []).ToList();
         if (sources.Count == 0) { BuildProgress.Value = endProgress; return; }
 
@@ -608,7 +615,10 @@ public partial class MainWindow : Window
     private void PartitionFormat_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is PartitionConfig partition && partition.FileSystem != "NTFS")
+        {
             partition.AutounattendSource = null;
+            partition.IsoSource = null;
+        }
         if (IsLoaded) QueuePartitionConfigurationChanged();
     }
 
@@ -968,7 +978,7 @@ public partial class MainWindow : Window
 
     private void MainDefaults_Click(object sender, RoutedEventArgs e)
     {
-        var hasSources = _partitions.Any(p => p.SourceFiles.Count + p.SourceFolders.Count > 0 || !string.IsNullOrWhiteSpace(p.AutounattendSource));
+        var hasSources = _partitions.Any(p => p.SourceFiles.Count + p.SourceFolders.Count > 0 || !string.IsNullOrWhiteSpace(p.AutounattendSource) || !string.IsNullOrWhiteSpace(p.IsoSource));
         if (hasSources && MessageBox.Show("Restore the configured default partitions and clear the current content selections?", "Restore defaults", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         _partitions = _defaultPartitions.Select(p => p.Clone()).ToList();
         MainPartitionList.ItemsSource = _partitions;
@@ -980,7 +990,7 @@ public partial class MainWindow : Window
     {
         if (_partitions.Count <= 1) { MessageBox.Show("At least one partition is required.", "Partition required", MessageBoxButton.OK, MessageBoxImage.Information); return; }
         var item = (sender as FrameworkElement)?.DataContext as PartitionConfig ?? MainPartitionList.SelectedItem as PartitionConfig ?? _partitions[^1];
-        if ((item.SourceFiles.Count + item.SourceFolders.Count > 0 || !string.IsNullOrWhiteSpace(item.AutounattendSource)) && MessageBox.Show($"Remove {item.Name} and its selected content list?", "Remove partition", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if ((item.SourceFiles.Count + item.SourceFolders.Count > 0 || !string.IsNullOrWhiteSpace(item.AutounattendSource) || !string.IsNullOrWhiteSpace(item.IsoSource)) && MessageBox.Show($"Remove {item.Name} and its selected content list?", "Remove partition", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         _partitions.Remove(item);
         if (!_partitions.Any(p => p.IsRemaining)) _partitions[^1].SizeText = "*";
         PartitionConfigurationChanged();
@@ -1014,11 +1024,20 @@ public partial class MainWindow : Window
         MainPartitionList.Items.Refresh(); UpdateBuildButton();
     }
 
+    private void PartitionIso_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not PartitionConfig partition || partition.FileSystem != "NTFS") return;
+        var dialog = new OpenFileDialog { Title = $"Select an ISO for {partition.Name}", Filter = "ISO images (*.iso)|*.iso", CheckFileExists = true, Multiselect = false };
+        if (dialog.ShowDialog() != true) return;
+        partition.IsoSource = dialog.FileName;
+        MainPartitionList.Items.Refresh(); UpdateBuildButton();
+    }
+
     private void PartitionSourcesClear_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is not PartitionConfig partition || (partition.SourceFiles.Count + partition.SourceFolders.Count == 0 && string.IsNullOrWhiteSpace(partition.AutounattendSource))) return;
+        if ((sender as FrameworkElement)?.DataContext is not PartitionConfig partition || (partition.SourceFiles.Count + partition.SourceFolders.Count == 0 && string.IsNullOrWhiteSpace(partition.AutounattendSource) && string.IsNullOrWhiteSpace(partition.IsoSource))) return;
         if (MessageBox.Show($"Clear all selected files and folders for {partition.Name}?", "Clear partition content", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        partition.SourceFiles.Clear(); partition.SourceFolders.Clear(); partition.AutounattendSource = null; MainPartitionList.Items.Refresh(); UpdateBuildButton();
+        partition.SourceFiles.Clear(); partition.SourceFolders.Clear(); partition.AutounattendSource = null; partition.IsoSource = null; MainPartitionList.Items.Refresh(); UpdateBuildButton();
     }
 }
 
