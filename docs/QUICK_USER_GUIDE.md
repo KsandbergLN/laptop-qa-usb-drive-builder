@@ -39,9 +39,10 @@ On the partition row that should receive content:
 - Select **Files** for individual files.
 - Select **Folders** for one or more folders.
 - Select **XML** on an NTFS partition for an answer file.
+- Select **ISO** on an NTFS partition for an ISO image.
 - Select **Clear** to remove all content selections for that partition.
 
-Folder contents are copied into the destination partition and merged in the order selected. An answer file is renamed to `Autounattend.xml` at the root of the NTFS partition.
+Folder contents are copied into the destination partition and merged in the order selected. An answer file is renamed to `Autounattend.xml` at the root of the NTFS partition. The XML button also turns green automatically when an XML file is present at the root of a selected folder. A selected ISO keeps its filename and is copied to the partition root.
 
 ## 5. Build
 

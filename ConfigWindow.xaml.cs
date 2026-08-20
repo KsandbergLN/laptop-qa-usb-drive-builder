@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
 using System.ComponentModel;
@@ -335,28 +336,52 @@ public sealed class PartitionConfig
     public ObservableCollection<string> SourceFolders { get; set; } = [];
     [JsonIgnore]
     public string? AutounattendSource { get; set; }
+    [JsonIgnore]
+    public string? IsoSource { get; set; }
     public bool IsRemaining => SizeText.Trim() == "*";
     public string PreviewText => $"{CalculatedSizeText ?? SizeText}  |  {FileSystem}";
     public string FilesButtonText => SourceFiles.Count == 0 ? "Files" : $"Files ({SourceFiles.Count})";
     public string FoldersButtonText => SourceFolders.Count == 0 ? "Folders" : $"Folders ({SourceFolders.Count})";
     public string AutounattendButtonText => "XML";
-    public bool HasAutounattend => !string.IsNullOrWhiteSpace(AutounattendSource);
-    public string AutounattendToolTip => string.IsNullOrWhiteSpace(AutounattendSource)
-        ? "Select Autounattend.xml for this NTFS partition."
-        : $"Autounattend.xml selected:\n{AutounattendSource}";
-    public string SourcesToolTip => SourceFiles.Count + SourceFolders.Count == 0 && string.IsNullOrWhiteSpace(AutounattendSource)
+    public string IsoButtonText => "ISO";
+    public string? FolderXmlSource => SourceFolders.Select(FindRootXmlFile).FirstOrDefault(path => path is not null);
+    public bool HasAutounattend => !string.IsNullOrWhiteSpace(AutounattendSource) || FolderXmlSource is not null;
+    public bool HasIso => !string.IsNullOrWhiteSpace(IsoSource);
+    public string AutounattendToolTip => !string.IsNullOrWhiteSpace(AutounattendSource)
+        ? $"Autounattend.xml selected:\n{AutounattendSource}"
+        : FolderXmlSource is not null
+            ? $"XML detected in a selected folder:\n{FolderXmlSource}"
+            : "Select Autounattend.xml for this NTFS partition, or add a folder containing an XML file.";
+    public string IsoToolTip => string.IsNullOrWhiteSpace(IsoSource)
+        ? "Select an ISO file for this NTFS partition."
+        : $"ISO selected:\n{IsoSource}";
+    public string SourcesToolTip => SourceFiles.Count + SourceFolders.Count == 0 && string.IsNullOrWhiteSpace(AutounattendSource) && string.IsNullOrWhiteSpace(IsoSource)
         ? "No content selected."
         : string.Join(Environment.NewLine,
             SourceFiles.Select(path => $"File: {path}")
                 .Concat(SourceFolders.Select(path => $"Folder: {path}"))
-                .Concat(string.IsNullOrWhiteSpace(AutounattendSource) ? [] : [$"Autounattend.xml: {AutounattendSource}"]));
+                .Concat(string.IsNullOrWhiteSpace(AutounattendSource) ? [] : [$"Autounattend.xml: {AutounattendSource}"])
+                .Concat(string.IsNullOrWhiteSpace(IsoSource) ? [] : [$"ISO: {IsoSource}"]));
     public PartitionConfig Clone()
     {
         var clone = new PartitionConfig { Number = Number, Name = Name, SizeText = SizeText, FileSystem = FileSystem };
         foreach (var path in SourceFiles) clone.SourceFiles.Add(path);
         foreach (var path in SourceFolders) clone.SourceFolders.Add(path);
         clone.AutounattendSource = AutounattendSource;
+        clone.IsoSource = IsoSource;
         return clone;
+    }
+
+    private static string? FindRootXmlFile(string folder)
+    {
+        try
+        {
+            return Directory.Exists(folder)
+                ? Directory.EnumerateFiles(folder, "*.xml", SearchOption.TopDirectoryOnly).FirstOrDefault()
+                : null;
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
     public static List<PartitionConfig> CreateDefaults() =>

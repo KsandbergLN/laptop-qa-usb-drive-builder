@@ -9,7 +9,7 @@ This is an operations handoff for technicians. It does not describe how the appl
 ## Current release
 
 - Application: Laptop QA USB Drive Builder
-- Release: 1.4.35
+- Release: 1.4.36
 - Platform: Windows 10/11, 64-bit
 - Launch: Run the newest `Laptop QA USB Drive Builder vX.Y.Z.exe` from the `dist` folder
 - Permissions: Windows administrator approval is required
@@ -21,7 +21,7 @@ The built drive uses GPT and, by default, has this layout:
 | Partition | Size | Format | Typical contents |
 |---|---:|---|---|
 | `DELL DIAG` | 50 MB | FAT32 | Diagnostic tools |
-| `Win11 Boot` | 20 GB | NTFS | Windows setup/support files and optional `Autounattend.xml` |
+| `Win11 Boot` | 20 GB | NTFS | Windows setup/support files, optional `Autounattend.xml`, and an optional ISO image |
 | `IT SUPP` | `*` (remaining space) | exFAT | Support tools and other technician content |
 
 The default layout can be changed in Settings. A valid layout must contain 1–6 partitions and exactly one `*` remaining-space partition.
@@ -41,11 +41,12 @@ The default layout can be changed in Settings. A valid layout must contain 1–6
 3. Select one or more USB drive cards. Multiple selections are queued and processed one at a time.
 4. Review **Partition Settings** and the **Partition Layout** preview.
 5. For each partition that needs content, use **Files** and/or **Folders**. Folder contents are merged into the root of that partition in selection order.
-6. For an NTFS partition, use **XML** if an answer file is needed. The selected file is copied to that partition's root as `Autounattend.xml`.
-7. Check the warning panel. Type `ERASE` exactly in the confirmation box.
-8. Select **Build USB Queue** and approve the final confirmation.
-9. Wait for the queue to finish. Do not remove a drive or close the application while a build is active.
-10. Review the completion message. It reports successful and failed drives and gives the build-log path.
+6. For an NTFS partition, use **XML** if an answer file is needed. The selected file is copied to that partition's root as `Autounattend.xml`. The XML button also turns green automatically when an XML file is detected at the root of a selected folder.
+7. Use **ISO** on an NTFS partition to attach one ISO image. The ISO keeps its original filename, is copied to the partition root, and turns the button green when selected.
+8. Check the warning panel. Type `ERASE` exactly in the confirmation box.
+9. Select **Build USB Queue** and approve the final confirmation.
+10. Wait for the queue to finish. Do not remove a drive or close the application while a build is active.
+11. Review the completion message. It reports successful and failed drives and gives the build-log path.
 
 Each drive is rechecked immediately before it is erased, then built and verified before the next queued drive starts. If one drive fails, later queued drives still run.
 
@@ -56,7 +57,7 @@ For each successful drive, the app has:
 - erased and initialized the target as GPT;
 - created and formatted the configured partitions;
 - copied the selected files and folders;
-- copied `Autounattend.xml` when selected for an NTFS partition; and
+- copied explicitly selected `Autounattend.xml` and ISO sources for NTFS partitions;
 - verified the expected partition labels and file systems.
 
 The app copies content and creates the requested layout. It does not modify source files or make a Windows image bootable.
@@ -103,8 +104,8 @@ When escalating, provide:
 - app version;
 - target disk number, displayed name, and capacity;
 - whether one drive or a queue was used;
-- the partition layout and source types selected;
+- the partition layout and source types selected, including XML or ISO sources;
 - the exact message shown by the app; and
 - the relevant `Build-YYYYMMDD-HHMMSS.log` or `Crash-YYYYMMDD-HHMMSS.log` file.
 
-Do not send source content or answer files unless they are specifically requested and approved.
+Do not send source content, answer files, or ISO images unless they are specifically requested and approved.

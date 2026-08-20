@@ -138,7 +138,7 @@
                             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <StackPanel>
                                     <TextBlock x:Name="PartitionEditorTitle" Style="{StaticResource SectionTitle}" Text="Partition Settings" Margin="0,0,0,2"/>
-                                    <TextBlock Text="XML selects Autounattend.xml for NTFS partitions." Style="{StaticResource Caption}" Margin="2,0,0,7"/>
+                                    <TextBlock Text="NTFS partitions support XML (Autounattend) and ISO selection. XML also turns green when detected in a selected folder." Style="{StaticResource Caption}" Margin="2,0,0,7"/>
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                                     <Button x:Name="AddPartitionButton" Style="{StaticResource CircleButton}" Content="+" Click="AddPartition_Click" Width="32" Height="32" Padding="0" FontSize="18" Background="#16844F" Margin="0,0,6,0" ToolTip="Add a partition"/>
@@ -159,6 +159,7 @@
                                             <Button Content="{Binding FilesButtonText}" Click="PartitionFiles_Click" Padding="9,5" Margin="0,0,5,0"/>
                                             <Button Content="{Binding FoldersButtonText}" Click="PartitionFolders_Click" Padding="9,5" Margin="0,0,5,0"/>
                                             <Button Content="{Binding AutounattendButtonText}" Click="PartitionAutounattend_Click" Padding="9,5" Margin="0,0,5,0" ToolTip="{Binding AutounattendToolTip}"><Button.Style><Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding FileSystem}" Value="NTFS"><Setter Property="Visibility" Value="Visible"/></DataTrigger><DataTrigger Binding="{Binding HasAutounattend}" Value="True"><Setter Property="Background" Value="#20B86A"/></DataTrigger></Style.Triggers></Style></Button.Style></Button>
+                                            <Button Content="{Binding IsoButtonText}" Click="PartitionIso_Click" Padding="9,5" Margin="0,0,5,0" ToolTip="{Binding IsoToolTip}"><Button.Style><Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding FileSystem}" Value="NTFS"><Setter Property="Visibility" Value="Visible"/></DataTrigger><DataTrigger Binding="{Binding HasIso}" Value="True"><Setter Property="Background" Value="#20B86A"/></DataTrigger></Style.Triggers></Style></Button.Style></Button>
                                             <Button Content="Clear" Click="PartitionSourcesClear_Click" Padding="8,5" ToolTip="Clear all selected content for this partition"/>
                                         </StackPanel></StackPanel>
                                     </Grid></Border>
